@@ -3,7 +3,7 @@
  * 이 프로그램은 한양대학교 ERICA 소프트웨어학부 재학생을 위한 교육용으로 제작되었습니다.
  */
 #include <stdio.h>
-#include <stdlib.h>
+#include <bsd/stdlib.h>
 #include <string.h>
 #include "rsa_pss.h"
 

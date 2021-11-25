@@ -2,7 +2,7 @@
  * Copyright 2020,2021. Heekuck Oh, all rights reserved
  * 이 프로그램은 한양대학교 ERICA 소프트웨어학부 재학생을 위한 교육용으로 제작되었습니다.
  */
-#include <stdlib.h>
+#include <bsd/stdlib.h>
 #include <string.h>
 #include <gmp.h>
 #include "rsa_pss.h"
@@ -164,6 +164,31 @@ static unsigned char *mgf(const unsigned char *mgfSeed, size_t seedLen, unsigned
  */
 int rsassa_pss_sign(const void *m, size_t mLen, const void *d, const void *n, void *s)
 {
+
+	uint32_t *M, *pad1, *mhash, *salt, *DB, *ps, *EM, *maskedDB, *H, *hmgf;
+	uint32_t tmp_1 = 1;
+	uint32_t tmp_0 = 0;
+	if(rsa_cipher(s,d,n) == 1) return 1;//out of range
+	
+	sha(m,mLen,&mhash);//mhash = hash(m)
+	salt = arc4random_uniform(SHASIZE);
+
+	mhash = (mhash << SHASIZE);
+	M = (tmp_0 << 2*SHASIZE);
+	M = (M | mhash | salt);///M_prime = pad1 || mhash || salt
+
+	DB = (tmp_0 << RSAKEYSIZE - 1) | (tmp_1 << SHASIZE) | salt;
+	//DB = ps || 0x01 || salt
+	
+	sha(&M,8 + (SHASIZE/8) * 2, &H);
+	mgf(&H, SHASIZE/8, &hmgf, RSAKEYSIZE/8 - SHASIZE/8 - 1);
+	//H = hash(M), hmgf = MGF(H)
+	maskedDB = hmgf ^ DB | (tmp_1 << RSAKEYSIZE-1);
+	//maskedDB = hmgf ^ DB
+	EM = (maskedDB << SHASIZE + 8) | (hmgf << 8) | (0xbc);
+	//EM = maskedDB || H || TF
+	if(rsa_cipher(&EM,d,n) == 1)	return 1;
+
 }
 
 /*
