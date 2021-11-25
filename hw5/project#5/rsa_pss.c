@@ -17,6 +17,7 @@ void (*sha)(const unsigned char *, unsigned int, unsigned char *) = sha384;
 void (*sha)(const unsigned char *, unsigned int, unsigned char *) = sha512;
 #endif
 
+//#define DB_size RSAKEYSIZE - SHASIZE - 8
 /*
  * Copyright 2020, 2021. Heekuck Oh, all rights reserved
  * rsa_generate_key() - generates RSA keys e, d and n in octet strings.
@@ -164,31 +165,53 @@ static unsigned char *mgf(const unsigned char *mgfSeed, size_t seedLen, unsigned
  */
 int rsassa_pss_sign(const void *m, size_t mLen, const void *d, const void *n, void *s)
 {
+	unsigned char mhash[SHASIZE/8];
+	unsigned char salt[SHASIZE/8];
+	unsigned char M_prime[8+SHASIZE/8*2]; 
+	unsigned char H[SHASIZE/8];
+	unsigned char DB[DB_size/8];
+	unsigned char maskedDB[DB_size/8];
+	unsigned char EM[RSAKEYSIZE/8];
+	unsigned char mgf_H[DB_size/8];
+	uint64_t is_long = 1;
+	is_long = (is_long << 60) - 1;
 
-	uint32_t *M, *pad1, *mhash, *salt, *DB, *ps, *EM, *maskedDB, *H, *hmgf;
-	uint32_t tmp_1 = 1;
-	uint32_t tmp_0 = 0;
-	if(rsa_cipher(s,d,n) == 1) return 1;//out of range
+//	if(rsa_cipher(m,d,n) == 1)	return 1;// len(m) > len(n)
+
+	sha(m,mLen,mhash);//mhash = hash(m)
+	*salt = arc4random_uniform(SHASIZE);//salt
+
+	if(mLen > is_long)	return 2; //length of hash > 
+	if(RSAKEYSIZE < SHASIZE*2 + 2)	return 3;// len(EM) < hlen + slen + 2 
+
+	memset(M_prime, 0x00, 8);//padding1
+	memcpy(M_prime + 8, mhash, SHASIZE/8); //M_prime = pad1 || mhash
+	memcpy(M_prime + 8 + SHASIZE/8, salt, SHASIZE/8);
+
+	sha(M_prime,8 + SHASIZE/8 * 2, H);//H = hash(M_prime);
+
+	memset(DB, 0x00 ,DB_size/8 - SHASIZE/8);//padding2
+	DB[DB_size/8 - SHASIZE/8 - 1] = 0x01; // padding2
+	memcpy(DB + DB_size/8 - SHASIZE/8, salt, SHASIZE/8); // DB = padding2 | salt
 	
-	sha(m,mLen,&mhash);//mhash = hash(m)
-	salt = arc4random_uniform(SHASIZE);
+	mgf(H,SHASIZE/8,mgf_H, DB_size/8);//mgf_H = mgf(H)
 
-	mhash = (mhash << SHASIZE);
-	M = (tmp_0 << 2*SHASIZE);
-	M = (M | mhash | salt);///M_prime = pad1 || mhash || salt
+	//maskedDB = DB ^ mgf_H;
+	for(int i=0;i<DB_size/8;i++)	maskedDB[i] = DB[i] ^ mgf_H[i];
+	//mpz_xor(maskedDB,DB,mgf_H);
+	if(maskedDB[0] >> 7 & 1)	maskedDB[0] = 0x00;//MSB bit 0
 
-	DB = (tmp_0 << RSAKEYSIZE - 1) | (tmp_1 << SHASIZE) | salt;
-	//DB = ps || 0x01 || salt
-	
-	sha(&M,8 + (SHASIZE/8) * 2, &H);
-	mgf(&H, SHASIZE/8, &hmgf, RSAKEYSIZE/8 - SHASIZE/8 - 1);
-	//H = hash(M), hmgf = MGF(H)
-	maskedDB = hmgf ^ DB | (tmp_1 << RSAKEYSIZE-1);
-	//maskedDB = hmgf ^ DB
-	EM = (maskedDB << SHASIZE + 8) | (hmgf << 8) | (0xbc);
-	//EM = maskedDB || H || TF
-	if(rsa_cipher(&EM,d,n) == 1)	return 1;
+	memcpy(EM,maskedDB,DB_size/8);
+	memcpy(EM + DB_size/8, H, SHASIZE/8);
+	EM[RSAKEYSIZE/8 -1] = 0xbc;//memcpy(EM, 0xbc,1);
 
+
+	if(rsa_cipher(EM,d,n) == 1)	return 1;
+
+	memcpy(s, EM, RSAKEYSIZE/8);
+
+
+	return 0;
 }
 
 /*
@@ -196,4 +219,46 @@ int rsassa_pss_sign(const void *m, size_t mLen, const void *d, const void *n, vo
  */
 int rsassa_pss_verify(const void *m, size_t mLen, const void *e, const void *n, const void *s)
 {
+	unsigned char mhash[SHASIZE/8];
+	unsigned char maskedDB[DB_size/8];
+	unsigned char mgf_H[DB_size/8];
+	unsigned char DB[DB_size/8];
+	unsigned char salt[SHASIZE/8];
+	unsigned char M_prime[8+SHASIZE/8*2]; 
+	unsigned char H[SHASIZE/8];
+	unsigned char H_prime[SHASIZE/8];
+	unsigned char EM[RSAKEYSIZE/8];
+
+	uint8_t bc = 0xbc;
+
+	memcpy(EM, s, RSAKEYSIZE/8);
+
+
+	if(rsa_cipher(EM,e,n)==1)	return 1;
+
+	if(EM[RSAKEYSIZE/8 - 1] ^ bc)	return 4;
+	if(EM[0]>>7 != 0)	return 5;
+
+	sha(m,mLen,mhash);//mhash = hash(m)
+
+	memcpy(H, EM + DB_size/8, SHASIZE/8);// pick H from EM
+	memcpy(maskedDB, EM, DB_size/8);// pick maskedDB from EM
+
+	mgf(H,SHASIZE/8,mgf_H, DB_size/8);//mgf_H = mgf(H)
+	
+	for(int i=0;i<DB_size/8;i++)	DB[i] = maskedDB[i] ^ mgf_H[i];
+
+	memcpy(salt, DB + (DB_size - SHASIZE)/8, SHASIZE/8);//pick salt from DB
+
+	memset(M_prime,0x00,8);
+	memcpy(M_prime + 8,mhash,mLen);
+	memcpy(M_prime + 8 + SHASIZE/8, salt, SHASIZE);
+
+	sha(M_prime,RSAKEYSIZE,H_prime);
+
+	if(memcmp(H,H_prime,SHASIZE/8)!=0)	return 7;
+	
+
+
+	return 0;
 }

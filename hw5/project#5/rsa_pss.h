@@ -28,6 +28,8 @@
 #define EM_INVALID_PD2 6
 #define EM_HASH_MISMATCH 7
 
+#define DB_size RSAKEYSIZE - SHASIZE - 8
+
 void rsa_generate_key(void *e, void *d, void *n, int mode);
 int rsassa_pss_sign(const void *m, size_t mLen, const void *d, const void *n, void *s);
 int rsassa_pss_verify(const void *m, size_t mLen, const void *e, const void *n, const void *s);
