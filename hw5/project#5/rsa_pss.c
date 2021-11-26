@@ -17,7 +17,8 @@ void (*sha)(const unsigned char *, unsigned int, unsigned char *) = sha384;
 void (*sha)(const unsigned char *, unsigned int, unsigned char *) = sha512;
 #endif
 
-//#define DB_size RSAKEYSIZE - SHASIZE - 8
+#define DB_size (RSAKEYSIZE - SHASIZE - 8)
+#define pad2_size (DB_size - SHASIZE)
 /*
  * Copyright 2020, 2021. Heekuck Oh, all rights reserved
  * rsa_generate_key() - generates RSA keys e, d and n in octet strings.
@@ -167,50 +168,64 @@ int rsassa_pss_sign(const void *m, size_t mLen, const void *d, const void *n, vo
 {
 	unsigned char mhash[SHASIZE/8];
 	unsigned char salt[SHASIZE/8];
-	unsigned char M_prime[8+SHASIZE/8*2]; 
+	unsigned char M_prime[8+SHASIZE/8*2];
+
 	unsigned char H[SHASIZE/8];
+	unsigned char mgf_H[DB_size/8];
+
 	unsigned char DB[DB_size/8];
+
 	unsigned char maskedDB[DB_size/8];
 	unsigned char EM[RSAKEYSIZE/8];
-	unsigned char mgf_H[DB_size/8];
+
 	uint64_t is_long = 1;
-	is_long = (is_long << 60) - 1;
+	uint8_t bc = 0xbc;
+	is_long = (is_long << 60) - 1;//2^61-1
 
-//	if(rsa_cipher(m,d,n) == 1)	return 1;// len(m) > len(n)
 
-	sha(m,mLen,mhash);//mhash = hash(m)
-	*salt = arc4random_uniform(SHASIZE);//salt
+// --- error check ---
+	if(m > n)	return 1;//EM_MSG_OUT_OF_RANGE
 
-	if(mLen > is_long)	return 2; //length of hash > 
-	if(RSAKEYSIZE < SHASIZE*2 + 2)	return 3;// len(EM) < hlen + slen + 2 
+	if(mLen > is_long)	return 2;//EM_MSG_TOO_LONG
 
+	if(RSAKEYSIZE < SHASIZE * 2 + 2)	return 3; //EM_HASH_TOO_LONG
+
+// --- M_prime --- 
 	memset(M_prime, 0x00, 8);//padding1
+	sha(m, mLen, mhash);	//mhash = hash(m)
+	*salt = arc4random_uniform(SHASIZE);	//random # salt
+
 	memcpy(M_prime + 8, mhash, SHASIZE/8); //M_prime = pad1 || mhash
-	memcpy(M_prime + 8 + SHASIZE/8, salt, SHASIZE/8);
+	memcpy(M_prime + 8 + SHASIZE/8, salt, SHASIZE/8); // M_prime = pad1 || mhash || salt
 
-	sha(M_prime,8 + SHASIZE/8 * 2, H);//H = hash(M_prime);
+// --- H ---
+	sha(M_prime, 8 + SHASIZE/8 * 2, H);//H = hash(M_prime);
 
-	memset(DB, 0x00 ,DB_size/8 - SHASIZE/8);//padding2
-	DB[DB_size/8 - SHASIZE/8 - 1] = 0x01; // padding2
-	memcpy(DB + DB_size/8 - SHASIZE/8, salt, SHASIZE/8); // DB = padding2 | salt
-	
-	mgf(H,SHASIZE/8,mgf_H, DB_size/8);//mgf_H = mgf(H)
+// --- DB ---
+	memset(DB, 0x00, pad2_size/8);//padding2
+	DB[pad2_size/8 - 1] = 0x01; // padding2 : 0x01
 
-	//maskedDB = DB ^ mgf_H;
-	for(int i=0;i<DB_size/8;i++)	maskedDB[i] = DB[i] ^ mgf_H[i];
-	//mpz_xor(maskedDB,DB,mgf_H);
+	memcpy(DB + pad2_size/8, salt, SHASIZE/8); // DB = padding2 | salt
+
+// --- maskedDB ---
+	mgf(H, SHASIZE/8, mgf_H, DB_size/8);//mgf_H = mgf(H)
+
+	for(int i = 0; i < DB_size/8; i++)	maskedDB[i] = DB[i] ^ mgf_H[i];//maskedDB = DB ^ mgf_H;
+
 	if(maskedDB[0] >> 7 & 1)	maskedDB[0] = 0x00;//MSB bit 0
 
-	memcpy(EM,maskedDB,DB_size/8);
-	memcpy(EM + DB_size/8, H, SHASIZE/8);
-	EM[RSAKEYSIZE/8 -1] = 0xbc;//memcpy(EM, 0xbc,1);
+// --- EM ---
+
+	memcpy(EM, maskedDB, DB_size/8); //EM = masked_DB
+	memcpy(EM + DB_size/8, H, SHASIZE/8); //EM = maskedDB || H 
+	memcpy(EM + RSAKEYSIZE/8 - 1, &bc,1); // EM = maskedDB || TF(0xbc)
 
 
-	if(rsa_cipher(EM,d,n) == 1)	return 1;
+// --- error check ---
+	if(rsa_cipher(EM, d, n))	return 1; //EM cipher & EM_MSG_OUT_OF_RANGE
 
-	memcpy(s, EM, RSAKEYSIZE/8);
-
-
+// ---
+	memcpy(s, EM, RSAKEYSIZE/8);//s = EM
 	return 0;
 }
 
@@ -220,45 +235,72 @@ int rsassa_pss_sign(const void *m, size_t mLen, const void *d, const void *n, vo
 int rsassa_pss_verify(const void *m, size_t mLen, const void *e, const void *n, const void *s)
 {
 	unsigned char mhash[SHASIZE/8];
+
+	unsigned char EM[RSAKEYSIZE/8];
 	unsigned char maskedDB[DB_size/8];
+	unsigned char H[SHASIZE/8];
 	unsigned char mgf_H[DB_size/8];
+
 	unsigned char DB[DB_size/8];
 	unsigned char salt[SHASIZE/8];
+
 	unsigned char M_prime[8+SHASIZE/8*2]; 
-	unsigned char H[SHASIZE/8];
+
 	unsigned char H_prime[SHASIZE/8];
-	unsigned char EM[RSAKEYSIZE/8];
 
+	uint64_t is_long = 1;
 	uint8_t bc = 0xbc;
+	is_long = (is_long << 60) - 1;//2^61-1
+	
+	memcpy(EM, s, RSAKEYSIZE/8);//EM = s
 
-	memcpy(EM, s, RSAKEYSIZE/8);
+// --- error check ---
+	if(m > n)	return 1;//EM_MSG_OUT_OF_RANGE
+
+	if(mLen > is_long)	return 2;//EM_MSG_TOO_LONG
+
+	if(RSAKEYSIZE < SHASIZE * 2 + 2)	return 3; //EM_HASH_TOO_LONG
+
+	if(rsa_cipher(EM, e, n))	return 1;//EM_MSG_OUT_OF_RANGE
+
+	if(EM[RSAKEYSIZE/8 - 1] ^ bc)	return 4;//EM_INVALID_LAST
+
+	if(EM[0] >> 7 & 1)	return 5;//EM_INVALID_INT_INIT
+
+// --- M ---
+	sha(m,mLen,mhash); //mhash = hash(m) (step2
 
 
-	if(rsa_cipher(EM,e,n)==1)	return 1;
 
-	if(EM[RSAKEYSIZE/8 - 1] ^ bc)	return 4;
-	if(EM[0]>>7 != 0)	return 5;
 
-	sha(m,mLen,mhash);//mhash = hash(m)
-
-	memcpy(H, EM + DB_size/8, SHASIZE/8);// pick H from EM
+// --- EM ---
 	memcpy(maskedDB, EM, DB_size/8);// pick maskedDB from EM
+	memcpy(H, EM + DB_size/8 , SHASIZE/8);// pick H from EM
 
-	mgf(H,SHASIZE/8,mgf_H, DB_size/8);//mgf_H = mgf(H)
+	mgf(H, SHASIZE/8, mgf_H, DB_size/8);//mgf_H = mgf(H)
+
 	
-	for(int i=0;i<DB_size/8;i++)	DB[i] = maskedDB[i] ^ mgf_H[i];
+// --- DB ---
+	for(int i = 0; i < DB_size/8; i++)	DB[i] = maskedDB[i] ^ mgf_H[i];
+	memcpy(salt, DB + pad2_size/8, SHASIZE/8);//pick salt from DB
 
-	memcpy(salt, DB + (DB_size - SHASIZE)/8, SHASIZE/8);//pick salt from DB
+	//-- check padding2 --
+	for(int j = 1;j < pad2_size/8 - 1; j++){
+		if(DB[j] & 1)	return 6;//EM_INVALID_PD2
+	}
+	if(DB[pad2_size/8 - 1] != 0x01)	return 6;//EM_INVALID_PD2
 
-	memset(M_prime,0x00,8);
-	memcpy(M_prime + 8,mhash,mLen);
-	memcpy(M_prime + 8 + SHASIZE/8, salt, SHASIZE);
+// --- M_prime ---
+	memset(M_prime, 0x00, 8); //M_prime = padding1
+	memcpy(M_prime + 8, mhash, SHASIZE/8); //M_prime = padding1 || mhash
+	memcpy(M_prime + 8 + SHASIZE/8, salt, SHASIZE); //M_prime = padding || mhash || salt
 
-	sha(M_prime,RSAKEYSIZE,H_prime);
+//H_prime
+	sha(M_prime,8 + SHASIZE/8 * 2, H_prime); // H_prime = hash(M_prime)
 
-	if(memcmp(H,H_prime,SHASIZE/8)!=0)	return 7;
-	
+// --- error7 check
+	if(memcmp(H, H_prime, SHASIZE/8)!=0)	return 7;//compare H, H_prime
 
-
+// ---
 	return 0;
 }
