@@ -17,10 +17,10 @@ void (*sha)(const unsigned char *, unsigned int, unsigned char *) = sha384;
 void (*sha)(const unsigned char *, unsigned int, unsigned char *) = sha512;
 #endif
 
-#define hash_s SHASIZE/8
-#define rsa_s RSAKEYSIZE/8
-#define db_s (RSAKEYSIZE - SHASIZE - 8)/8
-#define pad2_s (db_s - SHASIZE/8)
+#define HASH_S SHASIZE/8
+#define RSA_S RSAKEYSIZE/8
+#define DB_S (RSAKEYSIZE - SHASIZE - 8)/8
+#define PAD2_S (DB_S - SHASIZE/8)
 
 
 
@@ -171,17 +171,17 @@ static unsigned char *mgf(const unsigned char *mgfSeed, size_t seedLen, unsigned
  */
 int rsassa_pss_sign(const void *m, size_t mLen, const void *d, const void *n, void *s)
 {
-	unsigned char mhash[hash_s];
-	unsigned char salt[hash_s];
-	unsigned char M_prime[8+hash_s*2];
+	unsigned char mhash[HASH_S];
+	unsigned char salt[HASH_S];
+	unsigned char M_prime[8 + HASH_S * 2];
 
-	unsigned char H[hash_s];
-	unsigned char mgf_H[db_s];
+	unsigned char H[HASH_S];
+	unsigned char mgf_H[DB_S];
 
-	unsigned char DB[db_s];
+	unsigned char DB[DB_S];
 
-	unsigned char maskedDB[db_s];
-	unsigned char EM[rsa_s];
+	unsigned char maskedDB[DB_S];
+	unsigned char EM[RSA_S];
 
 	uint64_t is_long = 1;
 	uint8_t bc = 0xbc;
@@ -189,47 +189,48 @@ int rsassa_pss_sign(const void *m, size_t mLen, const void *d, const void *n, vo
 
 
 // --- error check ---
-	if(m >= n)	return 1;//EM_MSG_OUT_OF_RANGE 메세지의 길이는 n보다 작아야함.
+	if(m >= n)	return EM_MSG_OUT_OF_RANGE;//EM_MSG_OUT_OF_RANGE 메세지의 길이는 n보다 작아야함.
 
-	if(mLen > is_long && SHASIZE <= 256)	return 2;//EM_MSG_TOO_LONG
+	if(mLen > is_long && SHASIZE <= 256)	return EM_MSG_TOO_LONG;//EM_MSG_TOO_LONG
 
-	if(RSAKEYSIZE < SHASIZE * 2 + 2)	return 3; //EM_HASH_TOO_LONG
+	if(RSA_S < HASH_S * 2 + 2)	return EM_HASH_TOO_LONG; //EM_HASH_TOO_LONG
 
 // --- M_prime --- 
 	memset(M_prime, 0x00, 8);//padding1
 	sha(m, mLen, mhash);	//mhash = hash(m)
 	*salt = arc4random_uniform(SHASIZE);	//upperbound가 SHASIZE인 random # salt 생성
-	memcpy(M_prime + 8, mhash, hash_s); //M_prime = pad1 || mhash
-	memcpy(M_prime + 8 + hash_s, salt, hash_s); // M_prime = pad1 || mhash || salt
+	memcpy(M_prime + 8, mhash, HASH_S); //M_prime = pad1 || mhash
+	memcpy(M_prime + 8 + HASH_S, salt, HASH_S); // M_prime = pad1 || mhash || salt
 
 // --- H ---
-	sha(M_prime, 8 + hash_s * 2, H);//H = hash(M_prime);
+	sha(M_prime, 8 + HASH_S * 2, H);//H = hash(M_prime);
 
 // --- DB ---
-	memset(DB, 0x00, pad2_s );//padding2
-	DB[pad2_s - 1] = 0x01; // padding2 : 0x01
-
-	memcpy(DB + pad2_s, salt, hash_s ); // DB = padding2 || salt
+	if(PAD2_S > 0){
+		memset(DB, 0x00, PAD2_S);//padding2
+		DB[PAD2_S - 1] = 0x01; // padding2 : 0x01
+	}
+	memcpy(DB + PAD2_S, salt, HASH_S); // DB = padding2 || salt
 
 // --- maskedDB ---
-	mgf(H, hash_s, mgf_H, db_s);//mgf_H = mgf(H)
+	mgf(H, HASH_S, mgf_H, DB_S);//mgf_H = mgf(H)
 
-	for(int i = 0; i < db_s; i++)	maskedDB[i] = DB[i] ^ mgf_H[i];//maskedDB = DB ^ mgf_H;
+	for(int i = 0; i < DB_S; i++)	maskedDB[i] = DB[i] ^ mgf_H[i];//maskedDB = DB ^ mgf_H;
 
 	maskedDB[0] = 0x00;//MSB bit 0
 
 // --- EM ---
 
-	memcpy(EM, maskedDB, db_s); //EM = masked_DB
-	memcpy(EM + db_s, H, hash_s); //EM = maskedDB || H 
-	memcpy(EM + rsa_s - 1, &bc,1); // EM = maskedDB || TF(0xbc)
+	memcpy(EM, maskedDB, DB_S); //EM = masked_DB
+	memcpy(EM + DB_S, H, HASH_S); //EM = maskedDB || H 
+	memcpy(EM + RSA_S - 1, &bc,1); // EM = maskedDB || TF(0xbc)
 
 
 // --- error check ---
-	if(rsa_cipher(EM, d, n))	return 1; //EM cipher & EM_MSG_OUT_OF_RANGE
+	if(rsa_cipher(EM, d, n))	return EM_MSG_OUT_OF_RANGE; //EM cipher & EM_MSG_OUT_OF_RANGE
 
 // ---
-	memcpy(s, EM, rsa_s);//s = EM
+	memcpy(s, EM, RSA_S);//s = EM
 	return 0;
 }
 
@@ -238,68 +239,69 @@ int rsassa_pss_sign(const void *m, size_t mLen, const void *d, const void *n, vo
  */
 int rsassa_pss_verify(const void *m, size_t mLen, const void *e, const void *n, const void *s)
 {
-	unsigned char mhash[hash_s];
+	unsigned char mhash[HASH_S];
 
-	unsigned char EM[rsa_s];
-	unsigned char maskedDB[db_s];
-	unsigned char H[hash_s];
-	unsigned char mgf_H[db_s];
+	unsigned char EM[RSA_S];
+	unsigned char maskedDB[DB_S];
+	unsigned char H[HASH_S];
+	unsigned char mgf_H[DB_S];
 
-	unsigned char DB[db_s];
-	unsigned char salt[hash_s];
+	unsigned char DB[DB_S];
+	unsigned char salt[HASH_S];
 
-	unsigned char M_prime[8 + hash_s * 2]; 
+	unsigned char M_prime[8 + HASH_S * 2]; 
 
-	unsigned char H_prime[hash_s];
+	unsigned char H_prime[HASH_S];
 
 	uint64_t is_long = 1;
 	uint8_t bc = 0xbc;
 	is_long = (is_long << 60) - 1;//2^61-1
 	
-	memcpy(EM, s, rsa_s);//EM = s
+	memcpy(EM, s, RSA_S);//EM = s
 
 // --- error check ---
-	if(m >= n)	return 1;//EM_MSG_OUT_OF_RANGE
+	if(m >= n)	return EM_MSG_OUT_OF_RANGE;//EM_MSG_OUT_OF_RANGE
 
-	if(mLen > is_long)	return 2;//EM_MSG_TOO_LONG
+	if(mLen > is_long)	return EM_MSG_TOO_LONG;//EM_MSG_TOO_LONG
 
-	if(RSAKEYSIZE < SHASIZE * 2 + 2)	return 3; //EM_HASH_TOO_LONG
+	if(RSA_S < HASH_S * 2 + 2)	return EM_HASH_TOO_LONG; //EM_HASH_TOO_LONG
 
-	if(rsa_cipher(EM, e, n))	return 1;//EM_MSG_OUT_OF_RANGE
+	if(rsa_cipher(EM, e, n))	return EM_MSG_OUT_OF_RANGE;//EM_MSG_OUT_OF_RANGE
 
-	if(EM[RSAKEYSIZE/8 - 1] ^ bc)	return 4;//EM_INVALID_LAST
+	if(EM[RSAKEYSIZE/8 - 1] ^ bc)	return EM_INVALID_LAST;//EM_INVALID_LAST
 
-	if(EM[0] >> 7 & 1)	return 5;//EM_INVALID_INIT
+	if(EM[0] >> 7 & 1)	return EM_INVALID_INIT;//EM_INVALID_INIT
 
 // --- M ---
 	sha(m,mLen,mhash); //mhash = hash(m) step2
 
 // --- EM ---
-	memcpy(maskedDB, EM, db_s );// pick maskedDB from EM
-	memcpy(H, EM + db_s, hash_s);// pick H from EM
+	memcpy(maskedDB, EM, DB_S );// pick maskedDB from EM
+	memcpy(H, EM + DB_S, HASH_S);// pick H from EM
 
-	mgf(H, hash_s , mgf_H, db_s );//mgf_H = mgf(H)
+	mgf(H, HASH_S , mgf_H, DB_S );//mgf_H = mgf(H)
 	
 // --- DB ---
-	for(int i = 0; i < db_s; i++)	DB[i] = maskedDB[i] ^ mgf_H[i];
-	memcpy(salt, DB + pad2_s , hash_s);//pick salt from DB
+	for(int i = 0; i < DB_S; i++)	DB[i] = maskedDB[i] ^ mgf_H[i];
+	memcpy(salt, DB + PAD2_S , HASH_S);//pick salt from DB
 
 	//-- check padding2 --
-	for(int j = 1;j < pad2_s - 1; j++){
-		if(DB[j] & 1)	return 6;//EM_INVALID_PD2
+	if(PAD2_S > 0){
+		for(int j = 1;j < PAD2_S - 1; j++){
+			if(DB[j] & 1)	return EM_INVALID_PD2;//EM_INVALID_PD2
+		}
+		if(DB[PAD2_S - 1] != 0x01)	return EM_INVALID_PD2;//EM_INVALID_PD2
 	}
-	if(DB[pad2_s - 1] != 0x01)	return 6;//EM_INVALID_PD2
-
 // --- M_prime ---
 	memset(M_prime, 0x00, 8); //M_prime = padding1
-	memcpy(M_prime + 8, mhash, hash_s); //M_prime = padding1 || mhash
-	memcpy(M_prime + 8 + hash_s, salt, hash_s); //M_prime = padding || mhash || salt
+	memcpy(M_prime + 8, mhash, HASH_S); //M_prime = padding1 || mhash
+	memcpy(M_prime + 8 + HASH_S, salt, HASH_S); //M_prime = padding || mhash || salt
 
 //H_prime
-	sha(M_prime,8 + hash_s * 2, H_prime); // H_prime = hash(M_prime)
+	sha(M_prime,8 + HASH_S * 2, H_prime); // H_prime = hash(M_prime)
 
 // --- error7 check
-	if(memcmp(H, H_prime, hash_s)!=0)	return 7;//compare H, H_prime
+	if(memcmp(H, H_prime, HASH_S)!=0)	return EM_HASH_MISMATCH;//compare H, H_prime
 
 // ---
 	return 0;
