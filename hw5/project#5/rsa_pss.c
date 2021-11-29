@@ -185,13 +185,13 @@ int rsassa_pss_sign(const void *m, size_t mLen, const void *d, const void *n, vo
 
 	uint64_t is_long = 1;
 	uint8_t bc = 0xbc;
-	is_long = (is_long << 60) - 1;//2^61-1
+	is_long = (is_long << 60) - 1;//2^61-1 (2^64bit = 2^61byte)
 
 
 // --- error check ---
-	if(m > n)	return 1;//EM_MSG_OUT_OF_RANGE 메세지의 길이는 n보다 작아야함.
+	if(m >= n)	return 1;//EM_MSG_OUT_OF_RANGE 메세지의 길이는 n보다 작아야함.
 
-	if(mLen > is_long)	return 2;//EM_MSG_TOO_LONG
+	if(mLen > is_long && SHASIZE <= 256)	return 2;//EM_MSG_TOO_LONG
 
 	if(RSAKEYSIZE < SHASIZE * 2 + 2)	return 3; //EM_HASH_TOO_LONG
 
@@ -209,14 +209,14 @@ int rsassa_pss_sign(const void *m, size_t mLen, const void *d, const void *n, vo
 	memset(DB, 0x00, pad2_s );//padding2
 	DB[pad2_s - 1] = 0x01; // padding2 : 0x01
 
-	memcpy(DB + pad2_s, salt, hash_s ); // DB = padding2 | salt
+	memcpy(DB + pad2_s, salt, hash_s ); // DB = padding2 || salt
 
 // --- maskedDB ---
 	mgf(H, hash_s, mgf_H, db_s);//mgf_H = mgf(H)
 
 	for(int i = 0; i < db_s; i++)	maskedDB[i] = DB[i] ^ mgf_H[i];//maskedDB = DB ^ mgf_H;
 
-	if(maskedDB[0] >> 7 & 1)	maskedDB[0] = 0x00;//MSB bit 0
+	maskedDB[0] = 0x00;//MSB bit 0
 
 // --- EM ---
 
@@ -259,7 +259,7 @@ int rsassa_pss_verify(const void *m, size_t mLen, const void *e, const void *n, 
 	memcpy(EM, s, rsa_s);//EM = s
 
 // --- error check ---
-	if(m > n)	return 1;//EM_MSG_OUT_OF_RANGE
+	if(m >= n)	return 1;//EM_MSG_OUT_OF_RANGE
 
 	if(mLen > is_long)	return 2;//EM_MSG_TOO_LONG
 
@@ -269,20 +269,16 @@ int rsassa_pss_verify(const void *m, size_t mLen, const void *e, const void *n, 
 
 	if(EM[RSAKEYSIZE/8 - 1] ^ bc)	return 4;//EM_INVALID_LAST
 
-	if(EM[0] >> 7 & 1)	return 5;//EM_INVALID_INT_INIT
+	if(EM[0] >> 7 & 1)	return 5;//EM_INVALID_INIT
 
 // --- M ---
-	sha(m,mLen,mhash); //mhash = hash(m) (step2
-
-
-
+	sha(m,mLen,mhash); //mhash = hash(m) step2
 
 // --- EM ---
 	memcpy(maskedDB, EM, db_s );// pick maskedDB from EM
 	memcpy(H, EM + db_s, hash_s);// pick H from EM
 
 	mgf(H, hash_s , mgf_H, db_s );//mgf_H = mgf(H)
-
 	
 // --- DB ---
 	for(int i = 0; i < db_s; i++)	DB[i] = maskedDB[i] ^ mgf_H[i];
