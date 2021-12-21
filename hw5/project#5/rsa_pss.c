@@ -206,10 +206,10 @@ int rsassa_pss_sign(const void *m, size_t mLen, const void *d, const void *n, vo
 	sha(M_prime, 8 + HASH_S * 2, H);//H = hash(M_prime);
 
 // --- DB ---
-	if(PAD2_S > 0){
-		memset(DB, 0x00, PAD2_S);//padding2
-		DB[PAD2_S - 1] = 0x01; // padding2 : 0x01
-	}
+	
+	memset(DB, 0x00, PAD2_S);//padding2
+	DB[PAD2_S - 1] = 0x01; // padding2 : 0x01
+	
 	memcpy(DB + PAD2_S, salt, HASH_S); // DB = padding2 || salt
 
 // --- maskedDB ---
@@ -286,12 +286,11 @@ int rsassa_pss_verify(const void *m, size_t mLen, const void *e, const void *n, 
 	memcpy(salt, DB + PAD2_S , HASH_S);//pick salt from DB
 
 	//-- check padding2 --
-	if(PAD2_S > 0){
-		for(int j = 1;j < PAD2_S - 1; j++){
-			if(DB[j] & 1)	return EM_INVALID_PD2;//EM_INVALID_PD2
-		}
-		if(DB[PAD2_S - 1] != 0x01)	return EM_INVALID_PD2;//EM_INVALID_PD2
+	for(int j = 1;j < PAD2_S - 1; j++){
+		if(DB[j] & 1)	return EM_INVALID_PD2;//EM_INVALID_PD2
 	}
+		if(DB[PAD2_S - 1] != 0x01)	return EM_INVALID_PD2;//EM_INVALID_PD2
+
 // --- M_prime ---
 	memset(M_prime, 0x00, 8); //M_prime = padding1
 	memcpy(M_prime + 8, mhash, HASH_S); //M_prime = padding1 || mhash
